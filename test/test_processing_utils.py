@@ -23,7 +23,7 @@ from gradio import components, data_classes, processing_utils, utils
 from gradio._vendor import ffmpy
 from gradio.context import LocalContext
 from gradio.exceptions import InvalidPathError
-from gradio.route_utils import API_PREFIX
+from gradio.route_utils import API_PREFIX, delete_files_created_by_app
 
 
 class TestTempFileManagement:
@@ -60,18 +60,79 @@ class TestTempFileManagement:
         assert len([f for f in gradio_temp_dir.glob("**/*") if f.is_file()]) == 2
         assert Path(f).name == "cheetah1-copy.jpg"
 
-    def test_save_file_to_cache_refreshes_ctime_of_a_reused_copy(self, tmp_path):
+    @staticmethod
+    def _cache_age_ns(path: str | Path) -> int:
+        """The value `delete_files_created_by_app` ages a file by."""
+        stat = Path(path).stat()
+        return max(stat.st_ctime_ns, stat.st_mtime_ns)
+
+    def test_save_file_to_cache_refreshes_age_of_a_reused_copy(self, tmp_path):
         source = tmp_path / "clip.txt"
         source.write_text("content")
         cache_dir = tmp_path / "cache"
 
         cached = processing_utils.save_file_to_cache(source, cache_dir=str(cache_dir))
-        first_ctime = Path(cached).stat().st_ctime_ns
+        first_age = self._cache_age_ns(cached)
         time.sleep(0.05)
         reused = processing_utils.save_file_to_cache(source, cache_dir=str(cache_dir))
 
         assert reused == cached
-        assert Path(reused).stat().st_ctime_ns > first_ctime
+        assert self._cache_age_ns(reused) > first_age
+
+    def test_delete_files_created_by_app_keeps_a_reused_copy(self, tmp_path):
+        """A cached copy handed out again must survive `delete_cache` cleanup.
+
+        `os.utime` refreshes ctime on POSIX but only mtime on Windows, where
+        st_ctime is the creation time, so the deleter must age by the later
+        of the two for the refresh to count everywhere.
+        """
+        source = tmp_path / "clip.txt"
+        source.write_text("content")
+        cache_dir = tmp_path / "cache"
+        blocks = gr.Blocks()
+
+        cached = processing_utils.save_file_to_cache(source, cache_dir=str(cache_dir))
+        blocks.temp_file_sets.append({cached})
+        time.sleep(1.2)
+        processing_utils.save_file_to_cache(source, cache_dir=str(cache_dir))
+
+        delete_files_created_by_app(blocks, age=1)
+        assert Path(cached).exists()
+
+    def test_delete_files_created_by_app_deletes_a_stale_copy(self, tmp_path):
+        """Aging still reaps a copy that was created and never touched again."""
+        source = tmp_path / "clip.txt"
+        source.write_text("content")
+        cache_dir = tmp_path / "cache"
+        blocks = gr.Blocks()
+
+        cached = processing_utils.save_file_to_cache(source, cache_dir=str(cache_dir))
+        blocks.temp_file_sets.append({cached})
+        time.sleep(1.2)
+
+        delete_files_created_by_app(blocks, age=1)
+        assert not Path(cached).exists()
+
+    def test_delete_files_created_by_app_keeps_a_fresh_copy_of_an_old_file(
+        self, tmp_path
+    ):
+        """A newly cached copy must not be reaped because of the source's age.
+
+        `shutil.copy2` gives the copy the source's mtime, so aging by mtime
+        alone would delete a copy the instant it was created.
+        """
+        source = tmp_path / "clip.txt"
+        source.write_text("content")
+        last_week = time.time() - 7 * 24 * 60 * 60
+        os.utime(source, (last_week, last_week))
+        cache_dir = tmp_path / "cache"
+        blocks = gr.Blocks()
+
+        cached = processing_utils.save_file_to_cache(source, cache_dir=str(cache_dir))
+        blocks.temp_file_sets.append({cached})
+
+        delete_files_created_by_app(blocks, age=1)
+        assert Path(cached).exists()
 
     def test_save_file_to_cache_leaves_nothing_behind_when_copy_fails(
         self, tmp_path, monkeypatch

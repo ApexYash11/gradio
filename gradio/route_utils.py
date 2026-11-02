@@ -1169,7 +1169,19 @@ def delete_files_created_by_app(blocks: Blocks, age: int | None) -> None:
                 continue
             try:
                 file_path = Path(file)
-                modified_time = datetime.fromtimestamp(file_path.lstat().st_ctime)
+                # Age by the later of ctime and mtime. On POSIX, st_ctime
+                # changes whenever a file is written to or `os.utime`d (and is
+                # then never earlier than st_mtime), so this is the ctime the
+                # `os.utime` in `save_file_to_cache` refreshes. On Windows,
+                # st_ctime is the creation time and `os.utime` only changes
+                # st_mtime, so st_mtime is the one that reflects the refresh.
+                # Taking the later of the two also keeps a newly cached copy
+                # of a long-unmodified file alive: `shutil.copy2` gives the
+                # copy the source's old mtime, but its ctime is "now".
+                stat = file_path.lstat()
+                modified_time = datetime.fromtimestamp(
+                    max(stat.st_ctime, stat.st_mtime)
+                )
                 if (
                     age is None
                     or (datetime.now() - modified_time).total_seconds() > age
