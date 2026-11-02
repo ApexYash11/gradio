@@ -1,5 +1,11 @@
 # @gradio/workflowcanvas
 
+## 0.15.0
+
+### Features
+
+- [#13972](https://github.com/gradio-app/gradio/pull/13972) [`d702b19`](https://github.com/gradio-app/gradio/commit/d702b19b8a6d7f2e8af6d7cd260c6e44af3e9433) - workflow: add masked setting on textboxes.  Thanks @hannahblair!
+
 ## 0.14.0
 
 ### Features
